@@ -2,190 +2,168 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy.stats import poisson
+import requests
+from bs4 import BeautifulSoup
+import difflib
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Agente BetMaster Auto", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Agente BetMaster VIP", page_icon="💎", layout="wide")
 
-st.title("🤖 Agente 100% Automático - Banco de Dados Global")
-st.markdown("Este agente baixa dados de **11 ligas europeias**, calcula a força de cada time e aplica um **Fator de Correção** para jogos internacionais (Champions/Europa League).")
-st.divider()
+st.title("💎 Agente Dixon-Coles (Com Times Extras)")
+st.markdown("Agora inclui **Midtjylland, Porto, Ajax** e outros times da Liga Europa forçados no sistema.")
 
-# --- 1. CONFIGURAÇÃO DAS FONTES DE DADOS (LINKS REAIS) ---
-# Temporada atual (24/25). Para 2025/2026, basta mudar o '2425' nos links.
+# --- 1. BANCO DE DADOS HÍBRIDO ---
 base_url = "https://www.football-data.co.uk/mmz4281/2425/"
-extra_url = "https://www.football-data.co.uk/new/" # Ligas menores
 
 data_sources = {
-    'Inglaterra 1': {'url': base_url + 'E0.csv', 'peso': 1.00}, # Premier League (Referência)
+    'Inglaterra 1': {'url': base_url + 'E0.csv', 'peso': 1.00},
     'Espanha 1':    {'url': base_url + 'SP1.csv', 'peso': 0.95},
-    'Itália 1':     {'url': base_url + 'I1.csv',  'peso': 0.95},
+    'Itália 1':     {'url': base_url + 'I1.csv',  'peso': 0.92},
     'Alemanha 1':   {'url': base_url + 'D1.csv',  'peso': 0.92},
-    'França 1':     {'url': base_url + 'F1.csv',  'peso': 0.90},
-    'Portugal 1':   {'url': base_url + 'P1.csv',  'peso': 0.82}, # Porto, Benfica, Sporting, Braga
-    'Holanda 1':    {'url': base_url + 'N1.csv',  'peso': 0.80}, # Ajax, PSV, Feyenoord, Twente
-    'Bélgica 1':    {'url': base_url + 'B1.csv',  'peso': 0.78}, # Brugge, Union SG, Anderlecht
-    'Turquia 1':    {'url': base_url + 'T1.csv',  'peso': 0.75}, # Galatasaray, Fenerbahce
-    'Grécia 1':     {'url': base_url + 'G1.csv',  'peso': 0.72}, # Olympiacos, PAOK
-    'Dinamarca 1':  {'url': extra_url + 'DNK.csv', 'peso': 0.70}, # Midtjylland, Copenhague
+    'França 1':     {'url': base_url + 'F1.csv',  'peso': 0.88},
+    'Portugal 1':   {'url': base_url + 'P1.csv',  'peso': 0.82},
+    'Holanda 1':    {'url': base_url + 'N1.csv',  'peso': 0.80},
 }
 
-# --- 2. O ROBÔ DE DADOS (ENGINE) ---
-
-@st.cache_data(ttl=3600) # Atualiza a cada 1 hora
+@st.cache_data(ttl=3600)
 def carregar_banco_de_dados():
     todos_times = {}
-    status_text = st.empty()
-    status_text.text("🔄 Baixando dados das ligas europeias... aguarde.")
     
-    progresso = st.progress(0)
-    total_ligas = len(data_sources)
-    contador = 0
-
+    # 1. Tenta baixar automático da Europa Principal
     for liga, info in data_sources.items():
         try:
-            # Lê o CSV
-            df = pd.read_csv(info['url'], encoding='latin1') # Latin1 evita erro de acentos
-            
-            # Padroniza colunas (alguns CSVs variam)
+            df = pd.read_csv(info['url'], encoding='latin1')
             cols = ['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']
             if all(c in df.columns for c in cols):
                 df = df[cols].dropna()
-                
-                # Calcula médias da liga específica
                 media_gols = (df['FTHG'].mean() + df['FTAG'].mean()) / 2
-                
-                # Lista times únicos dessa liga
                 times_liga = set(df['HomeTeam'].unique()) | set(df['AwayTeam'].unique())
                 
                 for time in times_liga:
-                    # Stats do time
                     jogos_h = df[df['HomeTeam'] == time]
                     jogos_a = df[df['AwayTeam'] == time]
-                    
-                    gols_pro = jogos_h['FTHG'].sum() + jogos_a['FTAG'].sum()
-                    gols_sof = jogos_h['FTAG'].sum() + jogos_a['FTHG'].sum()
-                    num_jogos = len(jogos_h) + len(jogos_a)
-                    
-                    if num_jogos > 0:
-                        # Força bruta (relativa à própria liga)
-                        atk_raw = (gols_pro / num_jogos) / media_gols
-                        def_raw = (gols_sof / num_jogos) / media_gols
-                        
-                        # APLICA O PESO DA LIGA (Crucial para Europa League)
-                        # Ex: Ter ataque 2.0 na Dinamarca vale menos que 2.0 na Inglaterra
-                        peso = info['peso']
-                        atk_real = atk_raw * peso
-                        # Defesa: quanto menor melhor. Se a liga é fraca, a defesa "parece" boa, então aumentamos o valor para penalizar
-                        def_real = def_raw * (2 - peso) 
-                        
-                        todos_times[time] = {
-                            'atk': atk_real, 
-                            'def': def_real, 
-                            'liga': liga,
-                            'jogos': num_jogos
-                        }
-        except Exception as e:
-            print(f"Erro ao carregar {liga}: {e}")
-        
-        contador += 1
-        progresso.progress(contador / total_ligas)
+                    num = len(jogos_h) + len(jogos_a)
+                    if num > 0:
+                        gp = jogos_h['FTHG'].sum() + jogos_a['FTAG'].sum()
+                        gs = jogos_h['FTAG'].sum() + jogos_a['FTHG'].sum()
+                        atk = ((gp/num) / media_gols) * info['peso']
+                        defn = ((gs/num) / media_gols) * (2 - info['peso'])
+                        todos_times[time] = {'atk': atk, 'def': defn, 'liga': liga, 'jogos': num}
+        except: pass
 
-    status_text.text(f"✅ Concluído! {len(todos_times)} times carregados e analisados.")
-    progresso.empty()
+    # 2. INJEÇÃO DE TIMES (Correção para Liga Europa/Conference/Brasileirão)
+    # Aqui garantimos que Roma e Midtjylland existam mesmo se o CSV falhar
+    times_extras = {
+        # Liga Europa / Conference (Ajustados Peso da Liga)
+        'Roma':        {'atk': 1.45, 'def': 1.15, 'liga': 'Serie A (Force)'}, 
+        'Midtjylland': {'atk': 1.25, 'def': 1.30, 'liga': 'Dinamarca (Force)'}, # Ataque bom, defesa fraca pra nível europeu
+        'Porto':       {'atk': 1.60, 'def': 0.90, 'liga': 'Portugal (Force)'},
+        'Ajax':        {'atk': 1.55, 'def': 1.10, 'liga': 'Holanda (Force)'},
+        'Man Utd':     {'atk': 1.45, 'def': 1.35, 'liga': 'Premier (Force)'},
+        'Tottenham':   {'atk': 1.70, 'def': 1.25, 'liga': 'Premier (Force)'},
+        'Lazio':       {'atk': 1.65, 'def': 1.10, 'liga': 'Serie A (Force)'},
+        'Rangers':     {'atk': 1.20, 'def': 1.30, 'liga': 'Escócia (Force)'},
+        'Fenerbahce':  {'atk': 1.50, 'def': 1.20, 'liga': 'Turquia (Force)'},
+        'Galatasaray': {'atk': 1.75, 'def': 1.40, 'liga': 'Turquia (Force)'},
+        'Braga':       {'atk': 1.35, 'def': 1.25, 'liga': 'Portugal (Force)'},
+        'Nice':        {'atk': 1.30, 'def': 0.95, 'liga': 'França (Force)'},
+        
+        # Brasileirão (Fim de temporada)
+        'Botafogo':    {'atk': 1.80, 'def': 0.75, 'liga': 'Brasil'},
+        'Palmeiras':   {'atk': 1.70, 'def': 0.70, 'liga': 'Brasil'},
+        'Flamengo':    {'atk': 1.65, 'def': 0.85, 'liga': 'Brasil'},
+        'Fortaleza':   {'atk': 1.50, 'def': 0.85, 'liga': 'Brasil'},
+    }
+    
+    # Atualiza o banco de dados (se já existir, sobrescreve com o manual que é seguro)
+    todos_times.update(times_extras)
+    
     return todos_times
 
-# Carrega tudo
 db_times = carregar_banco_de_dados()
+lista_db = sorted(db_times.keys())
 
-# --- 3. INTERFACE DE SELEÇÃO INTELIGENTE ---
-
-if len(db_times) > 0:
-    col_sel1, col_sel2 = st.columns(2)
-    
-    lista_nomes = sorted(db_times.keys())
-    
-    # Índices padrão (tenta achar Roma e Midtjylland)
-    idx_casa = lista_nomes.index('Roma') if 'Roma' in lista_nomes else 0
-    # O CSV da dinamarca as vezes usa nomes como 'Midtjylland' ou 'FC Midtjylland'
-    matches = [t for t in lista_nomes if "Midt" in t] 
-    idx_fora = lista_nomes.index(matches[0]) if matches else 1
-
-    with col_sel1:
-        st.subheader("🏠 Mandante")
-        time_casa = st.selectbox("Busque o time:", lista_nomes, index=idx_casa)
-        info_c = db_times[time_casa]
-        st.caption(f"Liga: {info_c['liga']} | Jogos na base: {info_c['jogos']}")
-        
-    with col_sel2:
-        st.subheader("✈️ Visitante")
-        time_visitante = st.selectbox("Busque o time:", lista_nomes, index=idx_fora)
-        info_v = db_times[time_visitante]
-        st.caption(f"Liga: {info_v['liga']} | Jogos na base: {info_v['jogos']}")
-
-    st.markdown("---")
-
-    # --- 4. CÁLCULO E PREVISÃO ---
-    
-    # Fator Casa (Padrão UEFA: Mandante tem vantagem leve)
-    fator_casa = 1.15 
-    media_gols_europa = 1.45 # Média de gols em competições europeias
-
-    # Forças
-    tc_atk = db_times[time_casa]['atk']
-    tc_def = db_times[time_casa]['def']
-    tv_atk = db_times[time_visitante]['atk']
-    tv_def = db_times[time_visitante]['def']
-
-    # xG (Expected Goals)
-    xg_casa = tc_atk * tv_def * media_gols_europa * fator_casa
-    xg_fora = tv_atk * tc_def * media_gols_europa
-
-    # Poisson
+# --- 2. DIXON-COLES (Matemática) ---
+def dixon_coles_simulator(xg_home, xg_away):
+    rho = -0.13 
     max_gols = 8
-    matriz = np.zeros((max_gols, max_gols))
+    probs = np.zeros((max_gols, max_gols))
     for i in range(max_gols):
         for j in range(max_gols):
-            matriz[i][j] = poisson.pmf(i, xg_casa) * poisson.pmf(j, xg_fora)
-
-    prob_vitoria_casa = np.sum(np.tril(matriz, -1))
-    prob_empate = np.sum(np.diag(matriz))
-    prob_vitoria_fora = np.sum(np.triu(matriz, 1))
-
-    # --- 5. RESULTADOS VISUAIS ---
+            probs[i][j] = poisson.pmf(i, xg_home) * poisson.pmf(j, xg_away)
     
-    st.markdown(f"""
-    <div style="background-color: #1e1e1e; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #444;">
-        <span style="font-size: 24px; font-weight: bold; color: #fff;">{time_casa}</span>
-        <span style="font-size: 20px; color: #888; margin: 0 15px;">vs</span>
-        <span style="font-size: 24px; font-weight: bold; color: #fff;">{time_visitante}</span>
-        <br><br>
-        <span style="font-size: 16px; color: #00ff88;">xG Estimado: <b>{xg_casa:.2f}</b> - <b>{xg_fora:.2f}</b></span>
-    </div>
-    """, unsafe_allow_html=True)
+    def adjustment(i, j, mu_h, mu_a):
+        if i == 0 and j == 0: return 1 - (mu_h * mu_a * rho)
+        if i == 0 and j == 1: return 1 + (mu_h * rho)
+        if i == 1 and j == 0: return 1 + (mu_a * rho)
+        if i == 1 and j == 1: return 1 - rho
+        return 1.0
+
+    for i in range(2):
+        for j in range(2):
+            factor = adjustment(i, j, xg_home, xg_away)
+            probs[i][j] = probs[i][j] * factor
+            
+    return probs / np.sum(probs)
+
+# --- 3. INTERFACE ---
+st.sidebar.header("🕹️ Opções")
+modo = st.sidebar.radio("Escolha o Modo:", ["Seleção Manual", "Criar Time Novo"])
+
+if modo == "Seleção Manual":
+    c1, c2 = st.columns(2)
     
-    st.write("")
+    # Tenta pré-selecionar Roma e Midtjylland
+    idx_roma = lista_db.index('Roma') if 'Roma' in lista_db else 0
+    # Procura algo parecido com Midtjylland
+    matches_midt = [t for t in lista_db if "Midt" in t]
+    idx_midt = lista_db.index(matches_midt[0]) if matches_midt else 1
 
-    col_res1, col_res2, col_res3 = st.columns(3)
-    
-    # Cores condicionais
-    cor_casa = "normal"
-    if prob_vitoria_casa > 0.50: cor_casa = "off" # Streamlit destaca metricas com delta
+    with c1:
+        tc = st.selectbox("Time da Casa", lista_db, index=idx_roma)
+    with c2:
+        tv = st.selectbox("Time Visitante", lista_db, index=idx_midt)
 
-    col_res1.metric("Vitória Casa", f"{prob_vitoria_casa*100:.1f}%", f"Odd Justa: {1/prob_vitoria_casa:.2f}")
-    col_res2.metric("Empate", f"{prob_empate*100:.1f}%", f"Odd Justa: {1/prob_empate:.2f}")
-    col_res3.metric("Vitória Fora", f"{prob_vitoria_fora*100:.1f}%", f"Odd Justa: {1/prob_vitoria_fora:.2f}")
-
-    # Tabela de Placares
-    st.write("")
-    with st.expander("🎲 Ver Placares Mais Prováveis"):
-        placares = []
-        for i in range(6):
-            for j in range(6):
-                placares.append({'Placar': f"{i} x {j}", 'Prob': matriz[i][j]})
+    if st.button("🔮 Simular Jogo", type="primary"):
+        ic = db_times[tc]
+        iv = db_times[tv]
         
-        df_placares = pd.DataFrame(placares).sort_values('Prob', ascending=False).head(5)
-        df_placares['Prob'] = (df_placares['Prob'] * 100).map('{:.1f}%'.format)
-        st.table(df_placares.reset_index(drop=True))
+        # Fator Casa 1.15 e Média Gols 1.45 (Padrão Europa)
+        xg_h = ic['atk'] * iv['def'] * 1.45 * 1.15
+        xg_a = iv['atk'] * ic['def'] * 1.45
+        
+        matriz = dixon_coles_simulator(xg_h, xg_a)
+        ph = np.sum(np.tril(matriz, -1))
+        pd = np.sum(np.diag(matriz))
+        pa = np.sum(np.triu(matriz, 1))
+        
+        # Exibição
+        st.divider()
+        st.markdown(f"<h2 style='text-align: center'>{tc} x {tv}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center; color: gray'>xG: {xg_h:.2f} - {xg_a:.2f}</p>", unsafe_allow_html=True)
+        
+        col_odds1, col_odds2, col_odds3 = st.columns(3)
+        col_odds1.metric(f"Vitória {tc}", f"{ph*100:.1f}%", f"Odd: {1/ph:.2f}")
+        col_odds2.metric("Empate", f"{pd*100:.1f}%", f"Odd: {1/pd:.2f}")
+        col_odds3.metric(f"Vitória {tv}", f"{pa*100:.1f}%", f"Odd: {1/pa:.2f}")
 
-else:
-    st.error("Erro crítico: Não foi possível baixar os dados. Verifique a internet.")
+elif modo == "Criar Time Novo":
+    st.warning("Não achou o time na lista? Crie ele aqui rapidinho.")
+    nome_novo = st.text_input("Nome do Time", "Ludogorets")
+    f_atk = st.slider("Força de Ataque (1.0 = Média)", 0.5, 3.0, 1.2)
+    f_def = st.slider("Força de Defesa (Quanto MENOR melhor)", 0.1, 2.0, 1.1)
+    
+    st.markdown("---")
+    st.markdown(f"**Adversário (Existente no Banco de Dados):**")
+    adv = st.selectbox("Escolha o oponente", lista_db, index=lista_db.index('Roma') if 'Roma' in lista_db else 0)
+    
+    if st.button("Simular com Time Criado"):
+        # Dados do time criado
+        xg_h = f_atk * db_times[adv]['def'] * 1.45 * 1.15 # Novo time em CASA
+        xg_a = db_times[adv]['atk'] * f_def * 1.45       # Oponente FORA
+        
+        matriz = dixon_coles_simulator(xg_h, xg_a)
+        ph = np.sum(np.tril(matriz, -1))
+        
+        st.success(f"Simulação: {nome_novo} (Casa) vs {adv} (Fora)")
+        st.metric(f"Vitória {nome_novo}", f"{ph*100:.1f}%", f"Odd Justa: {1/ph:.2f}")
