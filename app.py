@@ -3,97 +3,152 @@ import pandas as pd
 import numpy as np
 from scipy.stats import poisson
 
-# --- Configuração da Página ---
-st.set_page_config(page_title="Agente BetMaster", page_icon="⚽")
+# --- Configurações Iniciais ---
+st.set_page_config(page_title="Agente BetMaster Global", page_icon="🌍", layout="wide")
 
-st.title("⚽ Agente de Previsão Esportiva")
-st.markdown("Este agente utiliza o **Modelo de Poisson** para calcular as probabilidades reais de um jogo.")
+st.title("🌍 Agente de Previsão - Multi-Ligas")
+st.markdown("---")
 
-# --- 1. Base de Dados (Simulada) ---
-# Em produção, isso viria de um CSV ou API (Football-Data.co.uk)
-# Valor > 1.0 = Forte | Valor < 1.0 = Fraco
-teams_data = {
-    'Manchester City': {'atk': 2.5, 'def': 0.6},
-    'Liverpool':       {'atk': 2.3, 'def': 0.8},
-    'Arsenal':         {'atk': 2.1, 'def': 0.7},
-    'Chelsea':         {'atk': 1.6, 'def': 1.2},
-    'Man United':      {'atk': 1.4, 'def': 1.4},
-    'Tottenham':       {'atk': 1.8, 'def': 1.3},
-    'Newcastle':       {'atk': 1.5, 'def': 1.1},
-    'Luton Town':      {'atk': 0.8, 'def': 2.2}
+# --- 1. SELEÇÃO DE LIGA ---
+ligas = {
+    '🇬🇧 Premier League (Inglaterra)': 'https://www.football-data.co.uk/mmz4281/2425/E0.csv',
+    '🇪🇸 La Liga (Espanha)': 'https://www.football-data.co.uk/mmz4281/2425/SP1.csv',
+    '🇮🇹 Serie A (Itália)': 'https://www.football-data.co.uk/mmz4281/2425/I1.csv',
+    '🇩🇪 Bundesliga (Alemanha)': 'https://www.football-data.co.uk/mmz4281/2425/D1.csv',
+    '🇫🇷 Ligue 1 (França)': 'https://www.football-data.co.uk/mmz4281/2425/F1.csv',
+    '🇧🇷 Brasileirão Série A (Manual)': 'BR_MANUAL',
+    '🏆 Libertadores (Manual)': 'LIB_MANUAL'
 }
 
-# --- 2. Interface do Usuário ---
-col1, col2 = st.columns(2)
+liga_selecionada = st.sidebar.selectbox("Escolha o Campeonato", list(ligas.keys()))
 
-with col1:
-    home_team = st.selectbox("Time da Casa (Mandante)", list(teams_data.keys()), index=0)
+# --- 2. CARREGAMENTO DE DADOS ---
 
-with col2:
-    # Remove o time já selecionado na casa para evitar Time A vs Time A
-    away_options = [t for t in teams_data.keys() if t != home_team]
-    away_team = st.selectbox("Time Visitante", away_options, index=0)
+@st.cache_data # Isso faz o site ficar rápido, não baixa o arquivo toda hora
+def carregar_dados_europa(url):
+    try:
+        # Lê o CSV direto do link
+        df = pd.read_csv(url)
+        # Filtra colunas úteis: HomeTeam, AwayTeam, FTHG (Gols Casa), FTAG (Gols Fora)
+        df = df[['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']].dropna()
+        return df
+    except:
+        return None
 
-# --- 3. O Cérebro (Cálculo de Poisson) ---
-def calculate_probabilities(home, away):
-    # Média da liga (constante fictícia para exemplo)
-    avg_goals_home = 1.5
-    avg_goals_away = 1.2
+def calcular_forca_times(df):
+    # Médias da Liga
+    media_gols_casa = df['FTHG'].mean()
+    media_gols_fora = df['FTAG'].mean()
 
-    # Força esperada de gols
-    home_expectancy = teams_data[home]['atk'] * teams_data[away]['def'] * avg_goals_home
-    away_expectancy = teams_data[away]['atk'] * teams_data[home]['def'] * avg_goals_away
+    # Estatísticas por Time
+    times = sorted(list(set(df['HomeTeam'].unique()) | set(df['AwayTeam'].unique())))
+    stats = {}
 
-    # Simula placares de 0x0 até 5x5
-    max_goals = 6
-    probs = np.zeros((max_goals, max_goals))
+    for time in times:
+        # Jogos em Casa
+        jogos_casa = df[df['HomeTeam'] == time]
+        gols_pro_casa = jogos_casa['FTHG'].sum() if len(jogos_casa) > 0 else 0
+        gols_sof_casa = jogos_casa['FTAG'].sum() if len(jogos_casa) > 0 else 0
+        
+        # Jogos Fora
+        jogos_fora = df[df['AwayTeam'] == time]
+        gols_pro_fora = jogos_fora['FTAG'].sum() if len(jogos_fora) > 0 else 0
+        gols_sof_fora = jogos_fora['FTHG'].sum() if len(jogos_fora) > 0 else 0
 
-    for i in range(max_goals):
-        for j in range(max_goals):
-            prob_home = poisson.pmf(i, home_expectancy)
-            prob_away = poisson.pmf(j, away_expectancy)
-            probs[i][j] = prob_home * prob_away
+        num_jogos = len(jogos_casa) + len(jogos_fora)
+        
+        if num_jogos > 0:
+            # Força de Ataque = (Média de gols do time) / (Média da liga)
+            atk_rating = ((gols_pro_casa + gols_pro_fora) / num_jogos) / ((media_gols_casa + media_gols_fora) / 2)
+            def_rating = ((gols_sof_casa + gols_sof_fora) / num_jogos) / ((media_gols_casa + media_gols_fora) / 2)
+        else:
+            atk_rating, def_rating = 1.0, 1.0 # Padrão se não tiver dados
 
-    # Soma as probabilidades
-    prob_home_win = np.sum(np.tril(probs, -1))
-    prob_draw = np.sum(np.diag(probs))
-    prob_away_win = np.sum(np.triu(probs, 1))
-
-    return prob_home_win, prob_draw, prob_away_win, home_expectancy, away_expectancy
-
-# --- 4. Exibição dos Resultados ---
-if st.button("Calcular Probabilidades"):
-    p_home, p_draw, p_away, exp_h, exp_a = calculate_probabilities(home_team, away_team)
-
-    st.divider()
+        stats[time] = {'atk': atk_rating, 'def': def_rating}
     
-    # Placar Esperado (xG)
-    st.subheader(f"📊 Expectativa de Gols (xG)")
-    c1, c2 = st.columns(2)
-    c1.metric(home_team, f"{exp_h:.2f} gols")
-    c2.metric(away_team, f"{exp_a:.2f} gols")
+    return stats, media_gols_casa, media_gols_fora
 
-    st.divider()
+# Lógica de Seleção de Dados
+if "MANUAL" in ligas[liga_selecionada]:
+    # Dados Manuais para Brasil/Liberta (Pois dados grátis em CSV são raros)
+    if "Brasileirão" in liga_selecionada:
+        teams_stats = {
+            'Palmeiras': {'atk': 1.70, 'def': 0.60}, 'Botafogo': {'atk': 1.85, 'def': 0.70},
+            'Flamengo': {'atk': 1.65, 'def': 0.80}, 'Fortaleza': {'atk': 1.45, 'def': 0.85},
+            'Sao Paulo': {'atk': 1.25, 'def': 0.90}, 'Corinthians': {'atk': 1.15, 'def': 1.00},
+            'Vasco': {'atk': 1.25, 'def': 1.30}, 'Atletico-MG': {'atk': 1.40, 'def': 1.10}
+        }
+    else: # Libertadores (Principais times)
+        teams_stats = {
+            'River Plate': {'atk': 1.6, 'def': 0.7}, 'Atletico-MG': {'atk': 1.5, 'def': 0.9},
+            'Botafogo': {'atk': 1.7, 'def': 0.8}, 'Penarol': {'atk': 1.2, 'def': 1.1},
+            'Flamengo': {'atk': 1.6, 'def': 0.8}, 'Palmeiras': {'atk': 1.6, 'def': 0.7}
+        }
+    league_avg_home = 1.5
+    league_avg_away = 1.2
+    st.info("ℹ️ Usando base de dados manual (estimada) para esta liga.")
+else:
+    # Automático Europa
+    url = ligas[liga_selecionada]
+    df = carregar_dados_europa(url)
+    if df is not None:
+        teams_stats, league_avg_home, league_avg_away = calcular_forca_times(df)
+        st.success(f"✅ Dados atualizados carregados da {liga_selecionada}! ({len(df)} jogos analisados)")
+    else:
+        st.error("Erro ao carregar dados. O campeonato pode estar em pausa.")
+        teams_stats = {}
 
-    # Probabilidades e Odds Justas
-    st.subheader("🎯 Probabilidades & Odds Justas")
+# --- 3. INTERFACE DE PREVISÃO ---
+
+if teams_stats:
+    col1, col2 = st.sidebar.columns(2)
+    sorted_teams = sorted(teams_stats.keys())
     
-    # Dataframe para visualização limpa
-    results = pd.DataFrame({
-        'Resultado': [f"Vitória {home_team}", 'Empate', f"Vitória {away_team}"],
-        'Probabilidade (%)': [p_home*100, p_draw*100, p_away*100],
-        'Odd Justa (Fair)': [1/p_home, 1/p_draw, 1/p_away]
-    })
-    
-    # Formatação
-    st.dataframe(
-        results.style.format({
-            'Probabilidade (%)': '{:.1f}%',
-            'Odd Justa (Fair)': '{:.2f}'
-        }), 
-        use_container_width=True,
-        hide_index=True
-    )
+    home_team = col1.selectbox("Mandante", sorted_teams, index=0)
+    away_team = col2.selectbox("Visitante", sorted_teams, index=min(1, len(sorted_teams)-1))
 
-    # Dica de Aposta
-    st.info("💡 **Como usar:** Se a 'Odd Justa' aqui for MENOR que a Odd da Bet365/Betano, você encontrou uma aposta de valor (+EV).")
+    # --- CÁLCULO DE POISSON ---
+    def calculate_match(home, away):
+        h_atk = teams_stats[home]['atk']
+        h_def = teams_stats[home]['def']
+        a_atk = teams_stats[away]['atk']
+        a_def = teams_stats[away]['def']
+
+        # Fator Casa simples (1.10x)
+        xg_home = h_atk * a_def * league_avg_home * 1.10
+        xg_away = a_atk * h_def * league_avg_away
+
+        max_goals = 8
+        probs = np.zeros((max_goals, max_goals))
+        for i in range(max_goals):
+            for j in range(max_goals):
+                probs[i][j] = poisson.pmf(i, xg_home) * poisson.pmf(j, xg_away)
+
+        p_h = np.sum(np.tril(probs, -1))
+        p_d = np.sum(np.diag(probs))
+        p_a = np.sum(np.triu(probs, 1))
+        return p_h, p_d, p_a, xg_home, xg_away
+
+    if st.sidebar.button("Calcular Previsão"):
+        ph, pd_raw, pa, xgh, xga = calculate_match(home_team, away_team)
+
+        # Exibição
+        c1, c2, c3 = st.columns([1, 0.2, 1])
+        c1.markdown(f"### {home_team}")
+        c1.metric("xG", f"{xgh:.2f}")
+        c2.markdown("## x")
+        c3.markdown(f"### {away_team}")
+        c3.metric("xG", f"{xga:.2f}")
+
+        st.divider()
+
+        # Odds
+        odd_h, odd_d, odd_a = 1/ph, 1/pd_raw, 1/pa
+        
+        cols = st.columns(3)
+        cols[0].success(f"Vitória Casa: {ph*100:.1f}%\n\nOdd Justa: **{odd_h:.2f}**")
+        cols[1].warning(f"Empate: {pd_raw*100:.1f}%\n\nOdd Justa: **{odd_d:.2f}**")
+        cols[2].error(f"Vitória Fora: {pa*100:.1f}%\n\nOdd Justa: **{odd_a:.2f}**")
+
+else:
+    st.warning("Selecione uma liga válida.")
